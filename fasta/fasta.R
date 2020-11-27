@@ -82,3 +82,36 @@ colnames(hhh) <- c(
 
 xxx2 <- do.call(cbind, c(xxx, hhh)) %>% 
   as.data.frame()
+
+## access cRAP FASTA programmatically
+# IMPORTANT: there are two contaminants FASTA files available on the internet
+
+# MaxQuant, Max Plank Institute of Biochemistry (link not always working)
+# See http://coxdocs.org/doku.php?id=maxquant:start_downloads.htm&s[]=contaminants
+curl::curl_download(
+  url = "http://lotus1.gwdg.de/mpg/mmbc/maxquant_input.nsf/7994124a4298328fc125748d0048fee2/$FILE/contaminants.fasta", 
+  destfile = "fasta/contaminants_maxquant.fasta"
+)
+
+crap_mq <- Biostrings::fasta.index("fasta/contaminants.fasta")
+
+# Ron Beavis group, the Global Proteome Machine (GPM) (link not always working)
+# See https://www.thegpm.org/crap/
+curl::curl_download(
+  url = "ftp://ftp.thegpm.org/fasta/cRAP/crap.fasta", 
+  destfile = "fasta/contaminants_gpm.fasta"
+)
+
+crap_gpm <- Biostrings::fasta.index("fasta/contaminants_gpm.fasta")
+
+# Note the header formatting is not consistent at all
+
+# extract the accessions from the MaxQuant cRAP (not all are UniProt)
+crap_mq$accession <- regexec(
+  "^[^ ]+", 
+  crap_mq$desc, 
+  perl = TRUE
+) %>% 
+  regmatches(crap_mq$desc, .) %>% 
+  unlist()
+
