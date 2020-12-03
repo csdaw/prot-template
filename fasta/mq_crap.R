@@ -11,37 +11,42 @@ TOOL_ENDPOINT <- "/uploadlists/" # REST endpoint
 KB_ENDPOINT <- "/uniprot/" # UniProt website search endpoint
 UPARC_ENDPOINT <- "/uniparc/" # UniParc website search endpoint
 
-# MaxQuant, Max Plank Institute of Biochemistry (link not always working)
-# See http://coxdocs.org/doku.php?id=maxquant:start_downloads.htm&s[]=contaminants
+## MaxQuant, Max Plank Institute of Biochemistry (link not always working)
+## See http://coxdocs.org/doku.php?id=maxquant:start_downloads.htm&s[]=contaminants
 
-if (!file.exists("fasta/mq_crap_original.fasta")) {
+## This FASTA is also relatively old and not annotated properly. Therefore, we 
+## want to get the proteins from this original MaxQuant contaminants FASTA and 
+## create a new FASTA with the protein sequences from the most recent UniProt 
+## release.
+
+# download original MaxQuant contaminants FASTA if it does not already exist
+if (!file.exists("fasta/mq_contaminants_original.fasta")) {
   curl::curl_download(
     url = "http://lotus1.gwdg.de/mpg/mmbc/maxquant_input.nsf/7994124a4298328fc125748d0048fee2/$FILE/contaminants.fasta", 
-    destfile = "fasta/mq_crap_original.fasta"
+    destfile = "fasta/mq_contaminants_original.fasta"
   )
 }
 
-# load MaxQuant cRAP fasta
-crap_mq <- Biostrings::readAAStringSet("fasta/mq_crap_original.fasta")
+# load MaxQuant contaminants FASTA
+mq_crap <- Biostrings::readAAStringSet("fasta/mq_contaminants_original.fasta")
 
-# extract all accessions (UniProt or 'other') from fasta headers
-accessions <- regexec("^[^ ]+", names(crap_mq)) %>% 
-  regmatches(names(crap_mq), .) %>% 
+# extract all accessions (UniProt or 'other') from FASTA headers
+accessions <- regexec("^[^ ]+", names(mq_crap)) %>% 
+  regmatches(names(mq_crap), .) %>% 
   unlist()
 
 # extract UniProt and non-Uniprot accessions
 accessions_up <- grep("^[QPOA][A-Z,0-9]{5}", accessions, value = TRUE)
 accessions_other <- grep("^[QPOA][A-Z,0-9]{5}", accessions, invert = TRUE, value = TRUE)
 
-## Here we map canonical (non-isoform) UniProt accessions from the original 
-## MaxQuant fasta to modern UniProt accessions. Note that the mapping is not
-## 1:1 as the original fasta contains secondary and obsolete accessions.
+## Here we map canonical (non-isoform) UniProt accessions (209 entries) from the 
+## original MaxQuant fasta to modern UniProt accessions.
 
 # extract canonical UniProt accessions
-accessions_up_can <- grep("-[2-9]", accessions_up, invert = TRUE, value = TRUE)
+up_can_accessions <- grep("-[2-9]", accessions_up, invert = TRUE, value = TRUE)
 
 payload <- list(
-  query = paste(accessions_up_can, collapse = " "),
+  query = paste(up_can_accessions, collapse = " "),
   from = "ACC+ID",
   to = "ACC",
   format = "tab"
@@ -50,16 +55,23 @@ payload <- list(
 response <- GET(url = paste0(BASE, TOOL_ENDPOINT), query = payload)
 
 if (response$status_code == 200) {
-  mapping_up_can <- data.table::fread(content(response))
-  print(paste("Input length:", length(accessions_up_can)))
-  print(paste("Output length:", length(mapping_up_can$To)))
+  up_can_mapping <- data.table::fread(content(response)) %>% 
+    `colnames<-`(c("old_accession", "new_accession"))
+  print(paste("Input length:", length(up_can_accessions)))
+  print(paste("Output length:", length(unique(up_can_mapping$new_accession))))
 } else {
   print("Something went wrong. Status code: ", response$status_code)
 }
 
+## Note that the mapping is not 1:1 (input: 209 entries, output: 201 entries) as 
+## the original contaminants FASTA contains old accessions that now map to the 
+## same, modern accession as 'secondary' accessions. IMPORTANTLY, the FASTA
+## headers will now include both the UniProt accession and sequence version 
+## number (SV).
+
 # obtain FASTA for modern, canonical (non-isoform) UniProt accessions
 payload <- list(
-  query = paste(unique(mapping_up_can$To), collapse = " "),
+  query = paste(unique(up_can_mapping$new_accession), collapse = " "),
   from = "ACC+ID",
   to = "ACC",
   format = "fasta"
@@ -70,13 +82,13 @@ response <- GET(url = paste0(BASE, TOOL_ENDPOINT), query = payload, config = wri
 
 if (response$status_code == 200) {
   up_can_fasta <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length(unique(mapping_up_can$To))))
+  print(paste("Input length:", length(unique(up_can_mapping$new_accession))))
   print(paste("Output FASTA length:", length(up_can_fasta)))
 } else {
   print("Something went wrong. Status code: ", response$status_code)
 }
 
-## Note that there are some accessions that don't map to a FASTA,
+## Note that there are some accessions (4 entries) that don't map to a FASTA,
 ## because they are obsolete and have been removed from UniProt.
 ## We will leave these sequences out of the final FASTA. 
 
@@ -89,17 +101,18 @@ extracted_accessions <- regexec(
   regmatches(names(up_can_fasta), .) %>% 
   unlist()
 
-obsolete <- mapping_up_can$To[!mapping_up_can$To %in% extracted_accessions]
+obsolete <- up_can_mapping$new_accession[!up_can_mapping$new_accession %in% 
+                                           extracted_accessions]
 
-## Now we map isoform UniProt accessions from the original 
-## MaxQuant fasta to modern UniProt accessions.
+## Next we map the ISOFORM UniProt accessions from the original MaxQuant FASTA 
+## to modern UniProt accessions.
 
 # extract isoform UniProt accessions
-accessions_up_iso <- grep("-[2-9]", accessions_up, value = TRUE)
+up_iso_accessions <- grep("-[2-9]", accessions_up, value = TRUE)
 
 # obtain FASTA for modern, canonical (non-isoform) UniProt accessions
 payload <- list(
-  query = paste(accessions_up_iso, collapse = " "),
+  query = paste(up_iso_accessions, collapse = " "),
   from = "ACC+ID",
   to = "ACC",
   format = "fasta"
@@ -110,52 +123,64 @@ response <- GET(url = paste0(BASE, TOOL_ENDPOINT), query = payload, config = wri
 
 if (response$status_code == 200) {
   up_iso_fasta <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length(accessions_up_iso)))
+  print(paste("Input length:", length(up_iso_accessions)))
   print(paste("Output FASTA length:", length(up_iso_fasta)))
 } else {
   print("Something went wrong. Status code: ", response$status_code)
 }
 
-
 ## Now the non-UniProt accessions are dealt with.
+
 # extract refseq accessions
-accessions_refseq <- regexec("(?<=REFSEQ:)[A-Z,0-9,_]+", accessions_other, perl = TRUE) %>% 
+refseq_accessions <- regexec("(?<=REFSEQ:)[A-Z,0-9,_]+", accessions_other, perl = TRUE) %>% 
   regmatches(accessions_other, .) %>% 
   unlist()
 
-# search UniParc using the refseq accessions to obtain protein fasta
+## Try out the NCBI Entrez E-utilities
+ENTREZ_BASE <- "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+ENTREZ_SEARCH <- "esearch.fcgi"
+
 payload <- list(
-  query = paste(accessions_refseq, collapse = " OR "),
-  format = "fasta"
+  db = "protein",
+  term = paste(refseq_accessions, collapse = ","),
+  idtype = "acc"
 )
 
-tmp <- tempfile()
-response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
+response <- GET(url = paste0(ENTREZ_BASE, ENTREZ_SEARCH), query = payload)
+response$headers
+response$status_code
+XML::xmlParse(content(response)) 
 
-if (response$status_code == 200) {
-  refseq_fasta <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length(accessions_refseq)))
-  print(paste("Output FASTA length:", length(refseq_fasta)))
-} else {
-  print("Something went wrong. Status code: ", response$status_code)
-}
+ENTREZ_FETCH <- "efetch.fcgi"
 
-## The mapping of refseq accessions to UniParc sequences was not 1:1.
-## Therefore we compare these sequences to the original MaxQuant fasta to get
-## the UniParc sequences of interest.
+payload <- list(
+  db = "protein",
+  id = paste(refseq_accessions, collapse = ","),
+  retmode = "xml",
+  parsed = "true"
+)
 
-# keep only sequences of interest
-refseq_fasta <- Biostrings::intersect(refseq_fasta, crap_mq)
+response <- GET(url = paste0(ENTREZ_BASE, ENTREZ_FETCH), query = payload)
+response$headers
+response$status_code
+xxx <- content(response)
+class(xxx)
+yyy <- XML::xmlParse(content(response)) 
+zzz <- XML::xmlToDataFrame(yyy)
+
+XML::xpathSApply(xxx, "\\LineageEx", XML::xmlValue)
+
+ENTREZ_LINK <- "elink.fcgi?dbfrom=protein"
 
 # extract h-inv accessions
-accessions_hinv <- regexec("(?<=H-INV:)[A-Z,0-9]+", accessions_other, perl = TRUE) %>% 
+hinv_accessions <- regexec("(?<=H-INV:)[A-Z,0-9]+", accessions_other, perl = TRUE) %>% 
   regmatches(accessions_other, .) %>% 
   unlist()
 
 # extract ensembl accessions
-accessions_ens <- regexec("(?<=ENSEMBL:)[A-Z,0-9,_]+", accessions_other, perl = TRUE) %>% 
+ens_accessions <- regexec("(?<=ENSEMBL:)[A-Z,0-9,_]+", accessions_other, perl = TRUE) %>% 
   regmatches(accessions_other, .) %>% 
   unlist()
 
 # extract anything else non-UniProt
-accessions_manual <- grep("(ENSEMBL|REFSEQ|H-INV)", accessions_other, invert = TRUE, perl = TRUE)
+man_accessions <- grep("(ENSEMBL|REFSEQ|H-INV)", accessions_other, invert = TRUE, perl = TRUE)
