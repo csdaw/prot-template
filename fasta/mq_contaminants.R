@@ -243,6 +243,7 @@ idx <- sapply(
 up_can_unique_mq <- mq_crap[idx]
 
 # compare sequences from new FASTA to old MaxQuant FASTA (should be 193/193)
+# but it is not
 length(Biostrings::intersect(up_can_unique_uparc, up_can_unique_mq)) == 193
 
 ## 162/193 are good because MaxQuant headers are correct and do match the protein
@@ -341,6 +342,14 @@ if (response$status_code == 200) {
   stop("Something went wrong. Status code: ", response$status_code)
 }
 
+# keep only sequences from: HUMAN, PIG, ACHLY, HATHI, PSEFR, STAAU, BOVIN, 
+# SERMA, ZOASP, VIBFI, MOUSE, STRAV 
+up_can_unique_new <- up_can_unique_new[grep(
+  paste(c("HUMAN", "MOUSE", "PIG", "BOVIN", "ACHLY", "HATHI", "PSEFR", "STAAU", 
+          "SERMA", "ZOASP", "VIBFI", "STRAV"), collapse = "|"),
+  names(up_can_unique_new)
+)]
+
 # combine 193 "unique" into single FASTA
 up_can_unique_fasta <- c(
   Biostrings::intersect(up_can_unique_new, mq_crap),
@@ -393,7 +402,7 @@ response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = wr
 if (response$status_code == 200) {
   refseq_bad_uparc <- Biostrings::readAAStringSet(tmp)
   print(paste("Input length:", length(refseq_summary)))
-  print(paste("Output FASTA length:", length(refseq_bad_fasta)))
+  print(paste("Output FASTA length:", length(refseq_bad_uparc)))
 } else {
   print("Something went wrong. Status code: ", response$status_code)
 }
@@ -484,126 +493,117 @@ length(Biostrings::intersect(refseq_fasta, mq_crap)) == 6
 # See http://h-invitational.jp/hinv/ahg-db/index.jsp
 
 # extract H-InvDB accessions
-hinv_accessions <- regexec("(?<=H-INV:)[A-Z,0-9]+", accessions_other, perl = TRUE) %>% 
-  regmatches(accessions_other, .) %>% 
+hinv_accessions <- regexec("(?<=H-INV:)[A-Z,0-9]+", accessions_non_up, perl = TRUE) %>% 
+  regmatches(accessions_non_up, .) %>% 
   unlist()
 
-# map them to UniParc accessions
+# map them to UniParc accessions and get sequences
 payload <- list(
   query = paste(hinv_accessions, collapse = " OR "),
-  format = "tab"
+  format = "fasta"
 )
 
-response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload)
+tmp = tempfile()
+response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
 
 if (response$status_code == 200) {
-  hinv_mapping <- data.table::fread(content(response))
+  hinv_uparc <- Biostrings::readAAStringSet(tmp)
   print(paste("Input length:", length(hinv_accessions)))
-  print(paste("Output length:", nrow(hinv_mapping)))
+  print(paste("Output length:", length(hinv_uparc)))
 } else {
   print("Something went wrong. Status code: ", response$status_code)
 }
 
 ## The 3 H-InvDB accessions have mapped to 6 potential UniParc sequences.
-## Lets see exactly which sequences were in the original MaxQuant FASTA.
-hinv_lengths <- lengths(mq_crap[grep("H-INV", names(mq_crap))])
+## Lets get the sequences that actually match the original FASTA.
+hinv_fasta <- Biostrings::intersect(hinv_uparc, mq_crap)
+length(hinv_fasta) == 3
 
-hinv_mapping <- hinv_mapping[hinv_mapping$Length %in% hinv_lengths]
-
-## We can see that these sequences have been removed from UniProt. Therefore
-## we will not include them in the final updated FASTA.
+## From the FASTA headers we can see that all 3 sequences are "inactive" which
+## means they won't map to any current UniProtKB accessions, so we will move on.
 
 ###----------------------###
 #### Ensembl accessions ####
 ###----------------------###
 
-## Moving onto the Ensembl accessions.
 # extract Ensembl accessions
-ens_accessions <- regexec("(?<=ENSEMBL:)[A-Z,0-9,_]+", accessions_other, perl = TRUE) %>% 
-  regmatches(accessions_other, .) %>% 
+ens_accessions <- regexec("(?<=ENSEMBL:)[A-Z,0-9,_]+", accessions_non_up, perl = TRUE) %>% 
+  regmatches(accessions_non_up, .) %>% 
   unlist()
 
-# map them to modern UniProt accessions
 payload <- list(
-  query = paste(ens_accessions, collapse = " "),
-  from = "ENSEMBL_PRO_ID",
-  to = "ACC",
-  format = "tab"
-)
-
-response <- GET(url = paste0(BASE, TOOL_ENDPOINT), query = payload)
-
-if (response$status_code == 200) {
-  ens_mapping <- data.table::fread(content(response)) %>% 
-    `colnames<-`(c("old_accession", "new_accession"))
-  print(paste("Input length:", length(ens_accessions)))
-  print(paste("Output length:", length(ens_mapping$new_accession)))
-} else {
-  print("Something went wrong. Status code: ", response$status_code)
-}
-
-# get the fasta for Ensembl accessions that do map
-payload <- list(
-  query = paste(ens_mapping$new_accession, collapse = " "),
-  from = "ACC+ID",
-  to = "ACC",
+  query = paste(ens_accessions, collapse = " OR "),
   format = "fasta"
 )
 
 tmp <- tempfile()
-response <- GET(url = paste0(BASE, TOOL_ENDPOINT), query = payload, config = write_disk(tmp))
+response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
 
 if (response$status_code == 200) {
-  ens_fasta <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length(unique(ens_mapping$new_accession))))
-  print(paste("Output FASTA length:", length(ens_fasta)))
+  ens_uparc <- Biostrings::readAAStringSet(tmp)
+  print(paste("Input length:", length(ens_accessions)))
+  print(paste("Output FASTA length:", length(ens_uparc)))
 } else {
   print("Something went wrong. Status code: ", response$status_code)
 }
 
-# extract the Ensembl accessions that don't map
-ens_bad <- ens_accessions[!ens_accessions %in% ens_mapping$old_accession]
-
-# convert these to UniParc accessions
-payload <- list(
-  query = paste(ens_bad, collapse = " OR "),
-  format = "tab"
+idx <- sapply(
+  ens_accessions,
+  function(x) grep(x, names(mq_crap))
 )
 
-response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload)
+# check intersection of sequences, should be 21/25
+ens_uparc_good <- Biostrings::intersect(ens_uparc, mq_crap[idx])
+length(ens_uparc_good) == 21
+
+# 4/25 sequences in MaxQuant FASTA do not match their headers
+ens_uparc_bad <- Biostrings::setdiff(mq_crap[idx], ens_uparc)
+length(ens_uparc_bad) == 4
+
+## I manually found new headers that match the sequences by BLAST searching
+## the "bad" sequences against the UniParc database.
+manual_accessions <- c(
+  "UPI0000EBE2E6",
+  "UPI0000EBCA6F",
+  "UPI00005BDFA6",
+  "UPI00005BC624"
+)
+
+# obtain sequences with UniParc accession headers using old accessions 
+payload <- list(
+  query = paste(manual_accessions, collapse = " OR "),
+  format = "fasta"
+)
+
+tmp <- tempfile()
+response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
 
 if (response$status_code == 200) {
-  ens_bad_uparc <- data.table::fread(content(response))
-  print(paste("Input length:", length(ens_bad)))
-  print(paste("Output length:", nrow(ens_bad_uparc)))
+  ens_uparc_bad_fixed <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(manual_accessions)))
+  message(paste("Output FASTA length:", length(ens_uparc_bad_fixed)))
 } else {
-  print("Something went wrong. Status code: ", response$status_code)
+  stop("Something went wrong. Status code: ", response$status_code)
 }
 
-# then convert these UniParc accessions to UniProtKB
+# combine all the UniParc accessions obtained for the various sequences into
+# one FASTA
+ens_uparc <- c(
+  ens_uparc_good,
+  Biostrings::intersect(ens_uparc_bad_fixed, mq_crap)
+)
+
+# check that the length is still 193 sequences
+length(ens_uparc) == 25
+
+# check intersection of sequences with MaxQuant fasta, should be 25/25
+length(Biostrings::intersect(ens_uparc, mq_crap)) == 25
+
+# use UniParc accessions to get some modern UniProtKB headers if available
 payload <- list(
-  query = paste(ens_bad_uparc$Entry, collapse = " "),
+  query = paste(gsub("(?<=UPI[0-9,A-Z]{10}).*", "", names(ens_uparc), perl = TRUE), collapse = " "),
   from = "UPARC",
   to = "ACC",
-  format = "tab"
-)
-
-response <- GET(url = paste0(BASE, TOOL_ENDPOINT), query = payload)
-
-if (response$status_code == 200) {
-  ens_bad_mapping <- data.table::fread(content(response)) %>% 
-    `colnames<-`(c("old_accession", "new_accession"))
-  print(paste("Input length:", nrow(ens_bad_uparc)))
-  print(paste("Output length:", length(ens_bad_mapping$new_accession)))
-} else {
-  print("Something went wrong. Status code: ", response$status_code)
-}
-
-## Only 3 UniProtKB accessions are output. Lets get their sequences.
-payload <- list(
-  query = paste(ens_bad_mapping$new_accession, collapse = " "),
-  from = "ACC+ID",
-  to = "ACC",
   format = "fasta"
 )
 
@@ -611,18 +611,28 @@ tmp <- tempfile()
 response <- GET(url = paste0(BASE, TOOL_ENDPOINT), query = payload, config = write_disk(tmp))
 
 if (response$status_code == 200) {
-  ens_bad_fasta <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length(unique(ens_bad_mapping$new_accession))))
-  print(paste("Output FASTA length:", length(ens_bad_fasta)))
+  ens_new <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(ens_uparc)))
+  message(paste("Output FASTA length:", length(ens_new)))
 } else {
-  print("Something went wrong. Status code: ", response$status_code)
+  stop("Something went wrong. Status code: ", response$status_code)
 }
 
-## Two of the sequences are identical.
-ens_bad_fasta[[2]] == ens_bad_fasta[[3]]
+# manually remove duplicates
+ens_new <- ens_new[-c(2, 5)]
 
-## Therefore we will just drop the sequence from the incorrect cow proteome
-ens_bad_fasta <- ens_bad_fasta[-2]
+# combine Ensembl sequences into single FASTA
+ens_fasta <- c(
+  Biostrings::intersect(ens_new, mq_crap),
+  Biostrings::setdiff(ens_uparc, ens_new),
+  Biostrings::setdiff(ens_new, mq_crap)
+)
+
+# check that the length is still 25 sequences
+length(ens_fasta) == 25
+
+# check intersection of sequences, should be 25/25
+length(Biostrings::intersect(ens_fasta, mq_crap)) == 25
 
 ###---------###
 #### Other ####
@@ -632,39 +642,84 @@ ens_bad_fasta <- ens_bad_fasta[-2]
 # extract anything else non-UniProt
 man_accessions <- grep(
   "(ENSEMBL|REFSEQ|H-INV)", 
-  accessions_other, 
+  accessions_non_up, 
   invert = TRUE, value = TRUE, perl = TRUE
 )
 
-# it is streptavidin which we will just retrieve manually UPI000002B867
+# it is streptavidin which we will just retrieve manually
 payload <- list(
-  query = "P22629",
-  from = "ACC+ID",
-  to = "ACC",
+  query = "UPI000002B867",
   format = "fasta"
 )
 
 tmp <- tempfile()
-response <- GET(url = paste0(BASE, TOOL_ENDPOINT), query = payload, config = write_disk(tmp))
+response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
 
 if (response$status_code == 200) {
   oth_fasta <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length("P22629")))
-  print(paste("Output FASTA length:", length(oth_fasta)))
+  message(paste("Input length:", length("UPI000002B867")))
+  message(paste("Output FASTA length:", length(oth_fasta)))
 } else {
-  print("Something went wrong. Status code: ", response$status_code)
+  stop("Something went wrong. Status code: ", response$status_code)
 }
+
+# check that sequences matches original MaxQuant FASTA
+length(Biostrings::intersect(oth_fasta, mq_crap)) == 1
+
+###------------------###
+#### Combine FASTAs ####
+###------------------###
+
+# combine all the FASTAs
+output <- c(
+  up_iso_fasta,
+  up_can_dups_fasta,
+  up_can_unique_fasta,
+  refseq_fasta,
+  hinv_fasta,
+  ens_fasta,
+  oth_fasta
+)
+
+# any duplicates?
+any(duplicated(output))
+
+# remove duplicates
+output <- output[!duplicated(output)]
+
+# any duplicates?
+any(duplicated(output))
+
+# check that output length matches input length - 1
+length(output) == length(mq_crap) - 1
+
+# check that overlap is 242/244
+length(Biostrings::intersect(output, mq_crap)) == 242
 
 ###----------###
 #### Output ####
 ###----------###
 
-## Combine all the FASTAs
-output <- c(
-  up_can_unique_fasta,
-  up_can_dups_fasta,
-  up_iso_fasta,
-  refseq_fasta,
-  ens_fasta,
-  oth_fasta
+## Finally, we write our updated FASTA to a file with the current UniProt
+## release name appended.
+
+# sort according to entry name (alphabetical)
+sort_order <- regexec(
+  "(?<=sp\\|[A-Z,0-9]{6}\\|)[A-Z,0-9]+_[A-Z]+|UPI[0-9,A-Z]{10}", 
+  names(output), 
+  perl = TRUE
+) %>%
+  regmatches(names(output), .) %>% 
+  unlist() %>% 
+  order()
+
+output <- output[sort_order]
+
+# get the current UniProt release
+cur_release <- response$headers$`x-uniprot-release`
+
+# write updated GPM cRAP FASTA file
+Biostrings::writeXStringSet(
+  output, 
+  filepath = "fasta/mq_contaminants_fixed.fasta"
 )
