@@ -33,7 +33,6 @@ library(rentrez)
 ## Define some urls for GET requests
 BASE <- "https://www.uniprot.org"
 TOOL_ENDPOINT <- "/uploadlists/" # REST endpoint
-KB_ENDPOINT <- "/uniprot/" # UniProt website search endpoint
 UPARC_ENDPOINT <- "/uniparc/" # UniParc website search endpoint
 
 ###----------------------------------------###
@@ -61,7 +60,6 @@ accessions <- regexec("^[^ ]+", names(mq_crap)) %>%
   unlist()
 
 # extract UniProt and non-Uniprot accessions
-
 # UniProt accessions (length: 210)
 accessions_up <- grep(
   "^[QPOA][A-Z,0-9]{5}", 
@@ -107,8 +105,8 @@ response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = wr
 
 if (response$status_code == 200) {
   up_iso_fasta <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length(up_iso_accessions)))
-  print(paste("Output FASTA length:", length(up_iso_fasta)))
+  message(paste("Input length:", length(up_iso_accessions)))
+  message(paste("Output FASTA length:", length(up_iso_fasta)))
 } else {
   stop("Something went wrong. Status code: ", response$status_code)
 }
@@ -401,10 +399,10 @@ response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = wr
 
 if (response$status_code == 200) {
   refseq_bad_uparc <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length(refseq_summary)))
-  print(paste("Output FASTA length:", length(refseq_bad_uparc)))
+  message(paste("Input length:", length(refseq_summary)))
+  message(paste("Output FASTA length:", length(refseq_bad_uparc)))
 } else {
-  print("Something went wrong. Status code: ", response$status_code)
+  stop("Something went wrong. Status code: ", response$status_code)
 }
 
 idx <- sapply(
@@ -432,10 +430,10 @@ response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = wr
 
 if (response$status_code == 200) {
   refseq_good_uparc <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length(refseq_summary)))
-  print(paste("Output FASTA length:", length(refseq_good_uparc)))
+  message(paste("Input length:", length(refseq_summary)))
+  message(paste("Output FASTA length:", length(refseq_good_uparc)))
 } else {
-  print("Something went wrong. Status code: ", response$status_code)
+  stop("Something went wrong. Status code: ", response$status_code)
 }
 
 idx <- sapply(
@@ -503,15 +501,15 @@ payload <- list(
   format = "fasta"
 )
 
-tmp = tempfile()
+tmp <- tempfile()
 response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
 
 if (response$status_code == 200) {
   hinv_uparc <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length(hinv_accessions)))
-  print(paste("Output length:", length(hinv_uparc)))
+  message(paste("Input length:", length(hinv_accessions)))
+  message(paste("Output length:", length(hinv_uparc)))
 } else {
-  print("Something went wrong. Status code: ", response$status_code)
+  stop("Something went wrong. Status code: ", response$status_code)
 }
 
 ## The 3 H-InvDB accessions have mapped to 6 potential UniParc sequences.
@@ -541,10 +539,10 @@ response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = wr
 
 if (response$status_code == 200) {
   ens_uparc <- Biostrings::readAAStringSet(tmp)
-  print(paste("Input length:", length(ens_accessions)))
-  print(paste("Output FASTA length:", length(ens_uparc)))
+  message(paste("Input length:", length(ens_accessions)))
+  message(paste("Output FASTA length:", length(ens_uparc)))
 } else {
-  print("Something went wrong. Status code: ", response$status_code)
+  stop("Something went wrong. Status code: ", response$status_code)
 }
 
 idx <- sapply(
@@ -671,7 +669,7 @@ length(Biostrings::intersect(oth_fasta, mq_crap)) == 1
 ###------------------###
 
 # combine all the FASTAs
-output <- c(
+mq_new_fasta <- c(
   up_iso_fasta,
   up_can_dups_fasta,
   up_can_unique_fasta,
@@ -682,19 +680,66 @@ output <- c(
 )
 
 # any duplicates?
-any(duplicated(output))
+any(duplicated(mq_new_fasta))
 
 # remove duplicates
-output <- output[!duplicated(output)]
+mq_new_fasta <- mq_new_fasta[!duplicated(mq_new_fasta)]
 
 # any duplicates?
-any(duplicated(output))
+any(duplicated(mq_new_fasta))
 
 # check that output length matches input length - 1
-length(output) == length(mq_crap) - 1
+length(mq_new_fasta) == length(mq_crap) - 1
 
 # check that overlap is 242/244
-length(Biostrings::intersect(output, mq_crap)) == 242
+length(Biostrings::intersect(mq_new_fasta, mq_crap)) == 242
+
+###----------------------------###
+#### Compare input and output ####
+###----------------------------###
+
+# sort input and output FASTAs by sequence lengths
+mq_crap <- mq_crap[order(lengths(mq_crap))]
+mq_new_fasta <- mq_new_fasta[order(lengths(mq_new_fasta))]
+
+df <- data.frame(
+  input_headers = names(mq_crap),
+  input_lengths = lengths(mq_crap),
+  output_headers = c(names(mq_new_fasta), NA), # ensure same number of rows
+  output_lengths = c(lengths(mq_new_fasta), NA) # ensure same number of rows
+)
+
+# manually reorder certain sequences
+mq_crap <- mq_crap[c(1:9, 11:19, 10, 20:30, 32, 
+                     31, 33:71, 73, 74, 72, 77, 
+                     76, 78, 75, 79, 81, 80, 84, 
+                     82, 83, 85:90, 92, 91, 94, 
+                     93, 95, 97, 96, 98:107, 110, 
+                     109, 108, 111:113, 115, 116, 114, 117:130, 
+                     132, 131, 133:156, 158, 157, 159:161, 
+                     163, 164, 166, 165, 167:198, 200, 199, 201:length(mq_crap))]
+
+# create a data.frame to compare the input and output
+df <- data.frame(
+  input_headers = names(mq_crap),
+  input_lengths = lengths(mq_crap),
+  output_headers = names(mq_new_fasta),
+  output_lengths = lengths(mq_new_fasta)
+)
+
+# append former headers to UniParc headers
+former_headers <- regexec("[^ ]+", df$input_headers) %>% 
+  regmatches(df$input_headers, .) %>% 
+  unlist()
+
+df[grep("UPI", df$output_headers), 3] <- paste0(
+  df[grep("UPI", df$output_headers), 3],
+  " formerly=",
+  former_headers[grep("UPI", df$output_headers)]
+)
+
+# update headers in new FASTA
+names(mq_new_fasta) <- df$output_headers
 
 ###----------###
 #### Output ####
@@ -705,15 +750,16 @@ length(Biostrings::intersect(output, mq_crap)) == 242
 
 # sort according to entry name (alphabetical)
 sort_order <- regexec(
-  "(?<=sp\\|[A-Z,0-9]{6}\\|)[A-Z,0-9]+_[A-Z]+|UPI[0-9,A-Z]{10}", 
-  names(output), 
+  "(?<=\\|)[A-Z,0-9]+_[A-Z]+|UPI[0-9,A-Z]{10}", 
+  names(mq_new_fasta), 
   perl = TRUE
 ) %>%
-  regmatches(names(output), .) %>% 
+  regmatches(names(mq_new_fasta), .) %>% 
   unlist() %>% 
   order()
 
-output <- output[sort_order]
+output <- mq_new_fasta[sort_order]
+output <- output[c(1:158, length(output), 160:length(output)-1)]
 
 # get the current UniProt release
 cur_release <- response$headers$`x-uniprot-release`
