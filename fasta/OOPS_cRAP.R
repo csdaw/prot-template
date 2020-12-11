@@ -1,5 +1,10 @@
 ## Dependencies
 library(httr)
+library(magrittr)
+
+# define some urls for GET requests
+BASE <- "https://www.uniprot.org"
+TOOL_ENDPOINT <- "/uploadlists/" # REST endpoint
 
 ## This script also calls functions from the following packages:
 # Biostrings
@@ -33,7 +38,25 @@ if (response$status_code == 200) {
 # get the current UniProt release
 cur_release <- response$headers$`x-uniprot-release`
 
-# write updated MaxQuant contaminants FASTA file
+# load csd_cRAP FASTA
+crap_csd <- Biostrings::readAAStringSet(paste0("fasta/csd_cRAP_", cur_release, ".fasta"))
+
+# combine with OOPS contaminants
+combined <- c(output, crap_csd)
+
+# sort alphabetically
+sort_order <- regexec(
+  "(?<=\\|)[A-Z,0-9]+_[A-Z]+|UPI[0-9,A-Z]{10}", 
+  names(combined), 
+  perl = TRUE
+) %>%
+  regmatches(names(combined), .) %>% 
+  unlist() %>% 
+  order()
+
+output <- combined[c(sort_order, length(combined)-1, length(combined))]
+
+# write updated csd_cRAP FASTA file with OOPS contaminants
 Biostrings::writeXStringSet(
   output, 
   filepath = paste0("fasta/OOPS_cRAP_", cur_release, ".fasta")
