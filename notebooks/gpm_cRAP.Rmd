@@ -1,0 +1,365 @@
+---
+title: "GPM cRAP"
+author: "Charlotte Dawson"
+output: html_notebook
+---
+
+```{r}
+library(httr)
+library(magrittr)
+library(rvest)
+
+## This script also calls functions from the following packages:
+# Biostrings
+# data.table
+# curl
+
+## Define some urls for GET requests
+BASE <- "https://www.uniprot.org"
+TOOL_ENDPOINT <- "/uploadlists/" # REST endpoint
+KB_ENDPOINT <- "/uniprot/" # UniProt website search endpoint
+UPARC_ENDPOINT <- "/uniparc/" # UniParc website search endpoint
+```
+
+## What is cRAP?
+
+Description.
+
+## Investigating cRAP
+
+### GPM cRAP FASTA
+
+```{r}
+# download original GPM cRAP FASTA if it does not already exist
+if (!file.exists("gpm_cRAP_original.fasta")) {
+  curl::curl_download(
+    url = "ftp://ftp.thegpm.org/fasta/cRAP/crap.fasta", 
+    destfile = "gpm_cRAP_original.fasta"
+  )
+}
+
+# parse the FASTA with Biostrings
+crap_fasta <- Biostrings::readAAStringSet("gpm_cRAP_original.fasta")
+```
+
+How many sequences? And what do the headers look like?
+
+```{r}
+crap_fasta
+```
+
+We can see 116 sequences and the headers are in the form: `sp|entry_name`.
+
+The headers do not a lot of useful information... we only have
+`sp` which indicates the sequences came from SwissProt and then an `entry_name`
+(also known on UniProt as a `mnemonic`). It is not good to use entry names in
+the headers as they are not stable identifiers (i.e. a particular sequence can
+have different entry names over time).
+
+Nevertheless we will extract them.
+
+```{r}
+entry_names <- regexec("[A-Z,0-9]+_[A-Z]+", names(crap_fasta)) %>% 
+  regmatches(names(crap_fasta), .) %>% 
+  unlist()
+```
+
+### GPM website cRAP table
+
+The GPM website has a bit more information about the proteins in
+cRAP. Here we use rvest to scrape the tables on this website.
+
+```{r}
+# get a list of tables on GPM cRAP website
+crap_list <- read_html("https://www.thegpm.org/crap/") %>% 
+  html_nodes("table") %>% 
+  html_table(fill = TRUE)
+```
+
+Then we parse the tables into a single data.frame.
+
+```{r}
+# combine the separate tables into one
+crap_table <- do.call(rbind, crap_list[3:7]) %>% 
+  `colnames<-`(c("n", "id", "description", "reason")) %>% 
+  dplyr::filter(!is.na(n))
+```
+
+Thankfully this table has UniProt accessions which is a little better than 
+just entry names. However, over time the same UniProt accession can refer to
+different sequences. Therefore it is really important that FASTA headers
+have both a UniProt accession and a **sequence version** number (SV). With both
+an accession and a SV number one can know exactly which protein sequence is 
+being referred to.
+
+Here we extract the UniProt accessions from the cRAP table.
+
+```{r}
+# extract UniProt accessions from the description column
+crap_table$accession <- regexec(
+  "(?<=\\()[A-Z,0-9]{6}", 
+  crap_table$description, 
+  perl = TRUE
+) %>% 
+  regmatches(crap_table$description, .) %>% 
+  unlist()
+```
+
+For whatever reason, the GPM website cRAP table has 1 less protein than the 
+GPM cRAP FASTA.
+
+```{r}
+# GPM website cRAP table
+nrow(crap_table)
+
+# GPM cRAP FASTA
+length(crap_fasta)
+```
+
+We can see which protein is missing from the `crap_table` easily enough.
+
+```{r}
+extra_protein <- entry_names[!entry_names %in% crap_table$id]
+extra_protein
+```
+
+It is some _E. coli_ protein. Lets get its UniProt accession.
+
+```{r}
+# use the entry_name to query UniProt
+payload <- list(
+  query = extra_protein,
+  from = "ACC+ID",
+  to = "ACC",
+  format = "list"
+)
+
+response <- GET(url = paste0(BASE, TOOL_ENDPOINT), query = payload)
+
+# overwrite entry_name of extra protein with UniProt accession
+extra_protein <- strsplit(content(response), split = "\n") %>% 
+  unlist()
+extra_protein
+```
+
+## Re-annotating cRAP
+
+### Matching UniProt accessions to UniParc sequences
+
+According to the GPM cRAP website (https://www.thegpm.org/crap/) the cRAP FASTA
+has not been updated since 2012-01-01. Therefore, the accessions that have
+been assigned to these particular sequences are likely to be very out of date.
+
+In this section we will attempt to replicate the cRAP FASTA programmatically and
+re-annotate the FASTA headers. The sequences will (largely) remain the same 
+but the headers will have up-to-date accessions.
+
+First we use the UniProt accessions from the GPM website cRAP table (and the 
+extra _E. coli_ protein above) to query UniParc for their potential sequences.
+**UniParc** is ...
+
+```{r}
+# use UniProt accessions to obtain sequences from UniParc
+payload <- list(
+  query = paste(c(crap_table$accession, extra_protein), collapse = " OR "),
+  format = "fasta"
+)
+
+tmp <- tempfile()
+response <- GET(
+  url = paste0(BASE, UPARC_ENDPOINT), 
+  query = payload,
+  config = write_disk(tmp)
+)
+
+if (response$status_code == 200) {
+  crap_uparc <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(c(crap_table$accession, extra_protein))))
+  message(paste("Output FASTA length:", length(crap_uparc)))
+} else {
+  stop("Something went wrong. Status code: ", response$status_code)
+}
+```
+
+### Why sequence versions are important
+
+This query illustrates the problem with not including **sequence version** 
+numbers along with UniProt accessions in protein FASTA headers. In the code
+block above we have given UniProt 116 accessions and asked it for all the 
+sequences in UniParc that have been assigned to these accessions at any time
+previously. The result is "one-to-many" in that one UniProt accession can have
+referred to several different sequences over time.
+
+We can use the _E. coli_ protein P00551 to illustrate this issue. Previously,
+P00551 used to refer to the protein sequence UPI0000000444 (i.e. P00551 SV=1), 
+but it now refers to the ever so slightly different protein sequence 
+UPI000051AE0D (i.e. P00551 SV=2).
+
+Now the question is, which of these 2 possible sequences is used in the GPM
+FASTA?
+
+```{r}
+Biostrings::intersect(
+  crap_uparc,
+  crap_fasta[116] # GPM cRAP E. coli protein,
+  )
+```
+
+Clearly, the GPM cRAP FASTA uses P00551 SV=2. But without this information
+in the FASTA header we have no way of knowing this without manually checking
+what the sequence matches to, as in the code block above.
+
+### Matching cRAP FASTA sequences to UniParc sequences
+
+Now lets compare the `r length(crap_uparc)` UniParc sequences we have obtained 
+to the `r length(crap_fasta)` sequences from the input cRAP FASTA `crap`. 
+The overlap should be `r length(crap_fasta)`.
+
+```{r}
+length(Biostrings::intersect(crap_fasta, crap_uparc))
+```
+
+One sequence in the GPM cRAP FASTA is not matching our UniParc sequences.
+Which protein is this?
+
+```{r}
+bad_protein <- Biostrings::setdiff(crap_fasta, crap_uparc) %>% 
+  names() %>% 
+  gsub("sp|\\|", "", .)
+bad_protein
+```
+
+Lets get its accession from `crap_table` and its sequence from `crap_fasta`.
+
+```{r}
+crap_table[grep(bad_protein, crap_table$id), "accession"]
+crap_fasta[grep(bad_protein, names(crap_fasta))]
+```
+
+I manually BLASTed this sequence on UniParc and it doesn't match any sequence 
+of the exact same length. For whatever reason, at some point, the last 4 
+amino acids of this protein sequence in the GPM cRAP FASTA has been lost.
+Therefore, we will replace the incorrect, truncated sequence with the correct
+one (UPI000016C534) in our re-annotated FASTA.
+
+### Putting it all together
+
+```{r}
+crap_updated <- c(
+  Biostrings::intersect(crap_uparc, crap_fasta),
+  crap_uparc[grep("UPI000016C534", names(crap_uparc))]
+)
+crap_updated
+```
+
+### Getting more informative headers
+
+Use UniParc accessions to get some modern UniProtKB headers if available
+
+```{r}
+payload <- list(
+  query = paste(
+    gsub("(?<=UPI[0-9,A-Z]{10}).*", "", names(crap_updated), perl = TRUE), 
+    collapse = " "
+  ),
+  from = "UPARC",
+  to = "ACC",
+  format = "fasta"
+)
+tmp <- tempfile()
+response <- GET(
+  url = paste0(BASE, TOOL_ENDPOINT), 
+  query = payload, 
+  config = write_disk(tmp)
+)
+
+if (response$status_code == 200) {
+  crap_informative <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(crap_updated)))
+  message(paste("Output FASTA length:", length(crap_informative)))
+} else {
+  stop("Something went wrong. Status code: ", response$status_code)
+}
+```
+
+```{r}
+# keep only sequences from: HUMAN, MOUSE, BOVIN, PIG, SHEEP, HORSE, CHICK, 
+# RABIT, HEVBR, AEQVI, LYSEN, ECOLX, STAAU, YEAST, GRIFR, SCVLA, ECOLI
+crap_informative <- crap_informative[grep(
+  paste(c("HUMAN", "MOUSE", "BOVIN", "PIG", "SHEEP", "HORSE", "CHICK",
+          "RABIT", "YEAST", "ECOLI", "ECOLX", "HEVBR", "AEQVI", "LYSEN", 
+          "STAAU", "GRIFR", "SCVLA"), collapse = "|"),
+  names(crap_informative)
+)]
+```
+
+### Output
+
+```{r}
+crap_final <- c(
+  Biostrings::intersect(crap_informative, crap_updated), 
+  Biostrings::setdiff(crap_updated, crap_informative)
+)
+crap_final
+```
+
+Basic checks (should all be true).
+
+```{r}
+length(crap_final) == length(crap_fasta)
+length(Biostrings::intersect(crap_final, crap_fasta)) == 115
+grepl("ALDOA_RABIT", names(Biostrings::setdiff(crap_final, crap_fasta)))
+```
+
+```{r}
+idx_uparc <- grep("UPI", names(crap_final))
+
+crap_final_uparc <- crap_final[idx_uparc]
+crap_final_uparc_sort <- Biostrings::sort(crap_final_uparc)
+
+crap_fasta_uparc <- Biostrings::intersect(crap_fasta, crap_final_uparc)
+crap_fasta_uparc_sort <- Biostrings::sort(crap_fasta_uparc)
+```
+
+```{r}
+ df <- data.frame(
+   final_names = names(crap_final_uparc_sort) %>% gsub("sp|\\|", "", .),
+   final_lengths = lengths(crap_final_uparc_sort),
+   final_idx = idx_uparc[order(match(names(crap_final_uparc), df$final_names))],
+   fasta_names = names(crap_fasta_uparc_sort) %>% gsub("sp|\\|", "", .),
+   fasta_lengths = lengths(crap_fasta_uparc_sort),
+   fasta_accessions = unname(camprotR::match_id_(df$fasta_names, crap_table, "id", "accession", simplify = TRUE)),
+   new_names = paste0(df$final_names, " formerly=sp|", df$fasta_accessions, "|", df$fasta_names)
+ )
+```
+
+```{r}
+names(crap_final)[df$final_idx] <- df$new_names
+tail(names(crap_final))
+```
+
+```{r}
+# sort according to entry name (alphabetical)
+sort_order <- regexec(
+  "(?<=sp\\|[A-Z,0-9]{6}\\|)[A-Z,0-9]+_[A-Z]+|UPI[0-9,A-Z]{10}", 
+  names(crap_final), 
+  perl = TRUE
+) %>%
+  regmatches(names(crap_final), .) %>% 
+  unlist() %>% 
+  order()
+
+output <- crap_final[sort_order]
+
+# get the current UniProt release
+cur_release <- response$headers$`x-uniprot-release`
+```
+
+```{r, eval=FALSE}
+# write output
+Biostrings::writeXStringSet(
+  crap_final, 
+  filepath = paste0("gpm_cRAP_reannotated_", cur_release, ".fasta")
+)
+```
+
