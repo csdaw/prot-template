@@ -1,0 +1,91 @@
+---
+title: "MaxQuant contaminants"
+author: "Charlotte Dawson"
+output: html_notebook
+---
+
+```{r}
+library(httr)
+library(magrittr)
+library(rvest)
+
+## This script also calls functions from the following packages:
+# Biostrings
+# data.table
+# curl
+
+## Define some urls for GET requests
+BASE <- "https://www.uniprot.org"
+TOOL_ENDPOINT <- "/uploadlists/" # REST endpoint
+KB_ENDPOINT <- "/uniprot/" # UniProt website search endpoint
+UPARC_ENDPOINT <- "/uniparc/" # UniParc website search endpoint
+```
+
+## What are contaminants in MaxQuant?
+
+Description.
+
+## Investigating contaminants
+
+### Subsubheading
+
+```{r}
+# download original MaxQuant contaminants FASTA if it does not already exist
+if (!file.exists("mq_contaminants_original.fasta")) {
+  curl::curl_download(
+    url = "http://lotus1.gwdg.de/mpg/mmbc/maxquant_input.nsf/7994124a4298328fc125748d0048fee2/$FILE/contaminants.fasta", 
+    destfile = "mq_contaminants_original.fasta"
+  )
+}
+
+# load MaxQuant contaminants FASTA
+con_fasta <- Biostrings::readAAStringSet("mq_contaminants_original.fasta")
+```
+
+How many sequences?
+
+```{r}
+con_fasta
+```
+
+ And what do the headers look like?
+ 
+```{r}
+head(names(con_fasta))
+tail(names(con_fasta))
+```
+ 
+The headers show the protein sequences have come from multiple different 
+databases. Also the formatting of the UniProt headers is not standard which
+makes life difficult. We can extract the identifiers from the different
+databases from each FASTA header.
+
+```{r}
+# extract all protein IDs from FASTA headers
+ids <- regexec("^[^ ]+", names(con_fasta)) %>% 
+  regmatches(names(con_fasta), .) %>% 
+  unlist()
+head(ids)
+tail(ids)
+```
+
+
+In this notebook we will try to replicate the MaxQuant
+contaminants FASTA with up-to-date headers. 
+
+## UniProt sequences
+
+```{r}
+# extract UniProt accessions
+up <- grep(
+  "^[QPOA][A-Z,0-9]{5}", 
+  ids, 
+  value = TRUE
+)
+length(up)
+```
+
+
+
+
+## Non-UniProt sequences
