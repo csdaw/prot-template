@@ -56,6 +56,19 @@ How many sequences?
 con_fasta
 ```
 
+Any duplicated sequences?
+
+```{r}
+any(Biostrings::duplicated(con_fasta))
+```
+
+Remove duplicate sequence
+
+```{r}
+con_fasta <- con_fasta[!Biostrings::duplicated(con_fasta)]
+con_fasta
+```
+
  And what do the headers look like?
  
 ```{r}
@@ -79,146 +92,20 @@ non <- con_fasta[grep("^[QPOA][A-Z,0-9]{5}", names(con_fasta), invert = TRUE)]
 In this notebook we will try to replicate the MaxQuant
 contaminants FASTA with up-to-date headers. 
 
-## UniProt sequences (210 sequences)
-
-### UniProt isoform sequences (1 sequence)
-
-One of these sequences is a non-canonical sequence, which can be identified
-by its accession.
-
-```{r}
-up_iso <- up[grep("^[QPOA][A-Z,0-9]{5}-[2-9]", names(up))]
-up_iso
-```
-
-Lets use the UniProt accession for this protein to re-download its sequence
-with a correct UniProt header, then compare to the original
-
-```{r}
-payload <- list(
-  query = substr(names(up_iso), 1, 6),
-  format = "fasta"
-)
-
-tmp <- tempfile()
-response <- GET(url = paste0(BASE, KB_ENDPOINT), query = payload, config = write_disk(tmp))
-
-if (response$status_code == 200) {
-  up_iso_new <- Biostrings::readAAStringSet(tmp)
-  message(paste("Input length:", length(up_iso)))
-  message(paste("Output FASTA length:", length(up_iso_new)))
-  c(up_iso, up_iso_new)
-} else {
-  stop("Something went wrong. Status code: ", response$status_code)
-}
-```
-
-They are almost but not quite identical. 
-
-We can perform a quick pairwise alignment of the old and new sequences.
-
-```{r}
-iso_align <- Biostrings::pairwiseAlignment(up_iso_new, up_iso)
-iso_align
-```
-
-We can visualise the pairwise alignment.
-
-```{r}
-printPairwiseAlignment <- function(alignment, chunksize=60, returnlist=FALSE)
-  {
-     seq1aln <- Biostrings::pattern(alignment) # Get the alignment for the first sequence
-     seq2aln <- Biostrings::subject(alignment) # Get the alignment for the second sequence
-     alnlen  <- nchar(seq1aln)     # Find the number of columns in the alignment
-     starts  <- seq(1, alnlen, by=chunksize)
-     n       <- length(starts)
-     seq1alnresidues <- 0
-     seq2alnresidues <- 0
-     for (i in 1:n) {
-        chunkseq1aln <- substring(seq1aln, starts[i], starts[i]+chunksize-1)
-        chunkseq2aln <- substring(seq2aln, starts[i], starts[i]+chunksize-1)
-        # Find out how many gaps there are in chunkseq1aln:
-        gaps1 <- countPattern("-",chunkseq1aln) # countPattern() is from Biostrings package
-        # Find out how many gaps there are in chunkseq2aln:
-        gaps2 <- countPattern("-",chunkseq2aln) # countPattern() is from Biostrings package
-        # Calculate how many residues of the first sequence we have printed so far in the alignment:
-        seq1alnresidues <- seq1alnresidues + chunksize - gaps1
-        # Calculate how many residues of the second sequence we have printed so far in the alignment:
-        seq2alnresidues <- seq2alnresidues + chunksize - gaps2
-        if (returnlist == 'FALSE')
-        {
-           print(paste(chunkseq1aln,seq1alnresidues))
-           print(paste(chunkseq2aln,seq2alnresidues))
-           print(paste(' '))
-        }
-     }
-     if (returnlist == 'TRUE')
-     {
-        vector1 <- s2c(substring(seq1aln, 1, nchar(seq1aln)))
-        vector2 <- s2c(substring(seq2aln, 1, nchar(seq2aln)))
-        mylist <- list(vector1, vector2)
-        return(mylist)
-     }
-}
-
-printPairwiseAlignment(iso_align)
-```
-
-It seems in the old sequence there is an insertion of valine around AA 308.
-After BLASTing the old sequence against UniParc, one finds it corresponds to
-UPI00001D9675.
-
-So to replicate the MaxQuant contaminants we will download this UniParc
-sequence header and replace `up_iso`.
-
-```{r}
-payload <- list(
-  query = "UPI00001D9675",
-  format = "fasta"
-)
-
-tmp <- tempfile()
-response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
-
-if (response$status_code == 200) {
-  up_iso <- Biostrings::readAAStringSet(tmp)
-  #   `colnames<-`(c("old_accession", "uparc_accession"))
-  # message(paste("Input length:", length(up_can_accessions)))
-  # message(paste("Output length:", length(unique(up_can_mapping$uparc_accession))))
-} else {
-  stop("Something went wrong. Status code: ", response$status_code)
-}
-```
-
-```{r}
-names(up_iso) <- paste0(names(up_iso),
-                        " formerly=",
-                        str_extract("sp\\|[A-Z,0-9]{6}\\|[A-Z,0-9]+_[A-Z]+", names(up_iso_new)))
-up_iso
-```
-
-
-### UniProt canonical sequences (209 sequences)
-
-Now we work on the canonical sequences.
-
-```{r}
-up_can <- up[grep("^[QPOA][A-Z,0-9]{5}-[2-9]", names(up), invert = TRUE)]
-up_can
-```
+## UniProt sequences (209 sequences)
 
 Extract accessions.
 
 ```{r}
-up_can_accessions <- str_extract("^[QPOA][A-Z,0-9]{5}", names(up_can))
-head(up_can_accessions)
+up_accessions <- str_extract("^[QPOA][A-Z,0-9]{5}", names(up))
+head(up_accessions)
 ```
 
-
+Use UniProtKB accessions to query UniParc for sequences.
 
 ```{r}
 payload <- list(
-  query = paste(up_can_accessions, collapse = " OR "),
+  query = paste(up_accessions, collapse = " OR "),
   format = "fasta"
 )
 
@@ -226,32 +113,41 @@ tmp <- tempfile()
 response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
 
 if (response$status_code == 200) {
-  test <- Biostrings::readAAStringSet(tmp)
-  message(paste("Input length:", length(up_can_accessions)))
-  message(paste("Output FASTA length:", length(test)))
+  up_uparc <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(up_accessions)))
+  message(paste("Output FASTA length:", length(up_uparc)))
 } else {
   stop("Something went wrong. Status code: ", response$status_code)
 }
 ```
 
-```{r}
-Biostrings::intersect(up_can, test)
-```
-176 out of 209 accounted for.
-
+Of the `r length(up_uparc)` sequences we have obtained from UniParc, we
+see which match the `up` sequences.
 
 ```{r}
-xxx <- setdiff(up_can, test)
-xxx
+up_good <- Biostrings::intersect(up_uparc, up)
+up_good
 ```
 
-33 to go.
+We can see that `r length(up_good)` out of `r length(up)` sequences 
+are accounted for. 
 
 ```{r}
+up_bad <- setdiff(up, up_uparc)
+up_bad
+```
 
-xxx_accessions <- str_extract("^[QPOA][A-Z,0-9]{5}", names(xxx))
+This leaves `r length(up_bad)` sequences which don't match the headers
+they have been given in `contaminants.fasta`. 
+
+Lets take these 'bad' accessions and search UniProtKB, instead of UniParc this
+time.
+
+```{r}
+bad_accessions <- str_extract("^[QPOA][A-Z,0-9]{5}", names(up_bad))
+
 payload <- list(
-  query = paste(xxx_accessions, collapse = " OR "),
+  query = paste(bad_accessions, collapse = " OR "),
   format = "fasta"
 )
 
@@ -259,25 +155,233 @@ tmp <- tempfile()
 response <- GET(url = paste0(BASE, KB_ENDPOINT), query = payload, config = write_disk(tmp))
 
 if (response$status_code == 200) {
-  test2 <- Biostrings::readAAStringSet(tmp)
-  message(paste("Input length:", length(xxx_accessions)))
-  message(paste("Output FASTA length:", length(test2)))
+  bad_accessions_kb <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(bad_accessions)))
+  message(paste("Output FASTA length:", length(bad_accessions_kb)))
 } else {
   stop("Something went wrong. Status code: ", response$status_code)
 }
 ```
 
 ```{r}
-Biostrings::intersect(xxx, test2)
+up_good2 <- Biostrings::intersect(bad_accessions_kb, up_bad)
+up_good2
 ```
 
-3 of those 33 accounted for, 30 to go.
+Of the `r length(bad_accessions)` sequences from `up_can` that didn't match
+their headers, we have now found found appropriate headers for 
+`r length(up_good2)` of them.
 
 ```{r}
-yyy <- Biostrings::setdiff(xxx, test2)
-yyy
+up_bad2 <- Biostrings::setdiff(up_bad, bad_accessions_kb)
+up_bad2
 ```
+
+The final `r length(up_bad2)` sequences I had to BLAST by hand in the
+end as that was the quickest way to get metadata that actually matched the
+sequences they were supposed to be referring to.
+
+```{r}
+blast <- read.delim("blast_table.tab")
+str(blast)
+```
+
+```{r}
+
+```
+
 
 Blast table goes here...
 
+Search for more informative headers.
+
+Matching.
+
+Fin.
+
 ## Non-UniProt sequences (35 sequences)
+
+### RefSeq headers (6 sequences)
+
+```{r}
+# extract RefSeq accessions
+refseq_accessions <- str_extract("(?<=REFSEQ:)[A-Z,0-9,_]+", names(non))
+refseq_accessions
+```
+
+```{r}
+payload <- list(
+  query = paste(refseq_accession, collapse = " OR "),
+  format = "fasta"
+)
+
+tmp <- tempfile()
+response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
+
+if (response$status_code == 200) {
+  refseq_uparc <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(refseq_accessions)))
+  message(paste("Output FASTA length:", length(refseq_uparc)))
+} else {
+  stop("Something went wrong. Status code: ", response$status_code)
+}
+
+```
+
+```{r}
+# get sequences with new UniParc headers
+refseq <- Biostrings::intersect(refseq_uparc, non[grep("REFSEQ", names(non))])
+refseq
+```
+
+
+
+### H-InvDb headers (3 sequences)
+
+```{r}
+# extract H-InvDB accessions
+hinv_accessions <- str_extract("(?<=H-INV:)[A-Z,0-9]+", names(non))
+hinv_accessions
+```
+
+```{r}
+payload <- list(
+  query = paste(hinv_accessions, collapse = " OR "),
+  format = "fasta"
+)
+
+tmp <- tempfile()
+response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
+
+if (response$status_code == 200) {
+  hinv_uparc <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(hinv_accessions)))
+  message(paste("Output FASTA length:", length(hinv_uparc)))
+} else {
+  stop("Something went wrong. Status code: ", response$status_code)
+}
+
+```
+
+```{r}
+# get sequences with new UniParc headers
+hinv <- Biostrings::intersect(hinv_uparc, non[grep("H-INV", names(non))])
+hinv
+```
+
+### Ensembl headers (25 sequences)
+
+```{r}
+# extract Ensembl accessions
+ens_accessions <- str_extract("(?<=ENSEMBL:)[A-Z,0-9,_]+", names(non))
+ens_accessions
+```
+
+```{r}
+payload <- list(
+  query = paste(ens_accessions, collapse = " OR "),
+  format = "fasta"
+)
+
+tmp <- tempfile()
+response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
+
+if (response$status_code == 200) {
+  ens_uparc <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(ens_accessions)))
+  message(paste("Output FASTA length:", length(ens_uparc)))
+} else {
+  stop("Something went wrong. Status code: ", response$status_code)
+}
+
+```
+
+```{r}
+# get sequences with new UniParc headers
+ens_good <- Biostrings::intersect(ens_uparc, non[grep("ENSEMBL", names(non))])
+ens_good
+```
+
+```{r}
+ens_bad <- Biostrings::setdiff(non[grep("ENSEMBL", names(non))], ens_uparc)
+ens_bad
+```
+
+Manual BLASTing.
+
+```{r}
+# obtain sequences with UniParc accession headers using old accessions 
+payload <- list(
+  query = paste(c(
+    "UPI0000EBE2E6",
+    "UPI0000EBCA6F",
+    "UPI00005BDFA6",
+    "UPI00005BC624"
+  ), collapse = " OR "),
+  format = "fasta"
+)
+
+tmp <- tempfile()
+response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
+
+if (response$status_code == 200) {
+  ens_bad_uparc <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(ens_bad)))
+  message(paste("Output FASTA length:", length(ens_bad_uparc)))
+} else {
+  stop("Something went wrong. Status code: ", response$status_code)
+}
+```
+
+```{r}
+ens <- Biostrings::union(ens_good, ens_bad_uparc)
+ens
+```
+
+### Other headers (1 sequence)
+
+```{r}
+## Lastly, we will deal with any other proteins in the original FASTA
+# extract anything else non-UniProt
+oth_accession <- grep(
+  "(ENSEMBL|REFSEQ|H-INV)", 
+  names(non), 
+  invert = TRUE, value = TRUE, perl = TRUE
+)
+oth_accession
+```
+
+```{r}
+# it is streptavidin which we will just retrieve manually
+payload <- list(
+  query = "UPI000002B867",
+  format = "fasta"
+)
+
+tmp <- tempfile()
+response <- GET(url = paste0(BASE, UPARC_ENDPOINT), query = payload, config = write_disk(tmp))
+
+if (response$status_code == 200) {
+  oth <- Biostrings::readAAStringSet(tmp)
+  message(paste("Input length:", length(oth_accession)))
+  message(paste("Output FASTA length:", length(oth)))
+} else {
+  stop("Something went wrong. Status code: ", response$status_code)
+}
+
+oth
+```
+
+## Putting it all together
+
+```{r}
+con_fasta
+```
+
+```{r}
+con_fasta_new <- c(up_good, up_good2, refseq, hinv, ens, oth)
+length(con_fasta_new)
+Biostrings::intersect(con_fasta_new, con_fasta)
+```
+
+
